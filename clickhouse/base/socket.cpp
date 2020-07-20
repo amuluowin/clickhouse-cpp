@@ -7,6 +7,10 @@
 #include <unordered_set>
 #include <memory.h>
 
+#ifdef USE_SWOOLE
+#include "ext/swoole/include/socket_hook.h"
+#endif
+
 #if !defined(_win_)
 #   include <errno.h>
 #   include <fcntl.h>
@@ -282,14 +286,22 @@ SOCKET SocketConnect(const NetworkAddress& addr) {
                     getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
 
                     if (!err) {
+                        #if defined USE_SWOOLE
+                        SetNonBlock(s, true);
+                        #else
                         SetNonBlock(s, false);
+                        #endif
                         return s;
                     }
                    last_err = err;
                 }
             }
         } else {
+            #if defined USE_SWOOLE
+            SetNonBlock(s, true);
+            #else
             SetNonBlock(s, false);
+            #endif
             return s;
         }
     }
