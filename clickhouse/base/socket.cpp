@@ -229,10 +229,28 @@ void SocketOutput::DoWrite(const void* data, size_t len) {
     static const int flags = 0;
 #endif
 
-    if (::send(s_, (const char*)data, (int)len, flags) != (int)len) {
-        throw std::system_error(
-            errno, std::system_category(), "fail to send data"
-        );
+    // if (::send(s_, (const char*)data, (int)len, flags) != (int)len) {
+    //     throw std::system_error(
+    //         errno, std::system_category(), "fail to send data"
+    //     );
+    // }
+    int sent_bytes = 0;
+    int ret        = 0;
+    while (true) {
+        ret = ::send(s_, ((const char*)data) + sent_bytes, (int)len - sent_bytes, flags);
+        if (ret == -1) {
+            if (errno == EWOULDBLOCK) {
+                break;
+            } else if (errno == EINTR)
+                continue;
+            else
+                return;
+        } else if (ret == 0) {
+            return;
+        }
+        sent_bytes += ret;
+        if (sent_bytes == (int)len) break;
+        usleep(1);
     }
 }
 
