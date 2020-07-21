@@ -87,6 +87,10 @@ public:
 
     void Insert(const std::string& table_name, const Block& block);
 
+    void InsertQuery(Query query);
+
+    void InsertData(const Block& block);
+
     void Ping();
 
     void ResetConnection();
@@ -249,6 +253,45 @@ void Client::Impl::Insert(const std::string& table_name, const Block& block) {
         }
     }
 
+    // Send data.
+    SendData(block);
+    // Send empty block as marker of
+    // end of data.
+    SendData(Block());
+
+    // Wait for EOS.
+    while (ReceivePacket()) {
+        ;
+    }
+}
+
+void Client::Impl::InsertQuery(Query query) {
+    EnsureNull en(static_cast<QueryEvents*>(&query), &events_);
+
+    if (options_.ping_before_query) {
+        RetryGuard([this]() { Ping(); });
+    }
+
+    SendQuery(query.GetText());
+    
+    uint64_t server_packet;
+    // Receive data packet.
+    while (true) {
+        bool ret = ReceivePacket(&server_packet);
+
+        if (!ret) {
+            throw std::runtime_error("fail to receive data packet");
+        }
+        if (server_packet == ServerCodes::Data) {
+            break;
+        }
+        if (server_packet == ServerCodes::Progress) {
+            continue;
+        }
+    }
+}
+
+void Client::Impl::InsertData(const Block& block) {
     // Send data.
     SendData(block);
     // Send empty block as marker of
@@ -779,6 +822,14 @@ void Client::Select(const Query& query) {
 
 void Client::Insert(const std::string& table_name, const Block& block) {
     impl_->Insert(table_name, block);
+}
+
+void Client::InsertQuery(const std::string& query, SelectCallback cb) {
+    impl_->InsertQuery(Query(query).OnData(cb));
+}
+
+void Client::InsertData(const Block& block) {
+    impl_->InsertData(block);
 }
 
 void Client::Ping() {
