@@ -240,7 +240,7 @@ void SocketOutput::DoWrite(const void* data, size_t len) {
         ret = ::send(s_, ((const char*)data) + sent_bytes, (int)len - sent_bytes, flags);
         if (ret == -1) {
             if (errno == EWOULDBLOCK) {
-                break;
+                throw std::system_error(errno, std::system_category(), "fail to send data");
             } else if (errno == EINTR)
                 continue;
             else
