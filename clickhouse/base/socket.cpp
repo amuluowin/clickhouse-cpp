@@ -304,8 +304,15 @@ SOCKET SocketConnect(const NetworkAddress& addr) {
                     getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
 
                     if (!err) {
-                        #if defined USE_SWOOLE
-                        SetNonBlock(s, true);
+                        #if defined USE_SWOOLE 
+                        if(swoole_coroutine_get_current_id() != -1)
+                        {
+                            SetNonBlock(s, true);
+                        }
+                        else
+                        {
+                            SetNonBlock(s, false);
+                        }
                         #else
                         SetNonBlock(s, false);
                         #endif
@@ -315,8 +322,15 @@ SOCKET SocketConnect(const NetworkAddress& addr) {
                 }
             }
         } else {
-            #if defined USE_SWOOLE
-            SetNonBlock(s, true);
+            #if defined USE_SWOOLE 
+            if(swoole_coroutine_get_current_id() != -1)
+            {
+                SetNonBlock(s, true);
+            }
+            else
+            {
+                SetNonBlock(s, false);
+            }
             #else
             SetNonBlock(s, false);
             #endif
