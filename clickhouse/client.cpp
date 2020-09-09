@@ -1,46 +1,45 @@
 #include "client.h"
-#include "protocol.h"
+
+#include <assert.h>
+#include <cityhash/city.h>
+#include <lz4/lz4.h>
+
+#include <atomic>
+#include <sstream>
+#include <stdexcept>
+#include <system_error>
+#include <thread>
+#include <vector>
 
 #include "base/coded.h"
 #include "base/compressed.h"
 #include "base/socket.h"
 #include "base/wire_format.h"
-
 #include "columns/factory.h"
+#include "protocol.h"
 
-#include <cityhash/city.h>
-#include <lz4/lz4.h>
+#define DBMS_NAME "ClickHouse"
+#define DBMS_VERSION_MAJOR 1
+#define DBMS_VERSION_MINOR 2
 
-#include <assert.h>
-#include <atomic>
-#include <system_error>
-#include <thread>
-#include <vector>
-#include <sstream>
-#include <stdexcept>
+#define REVISION 54405
 
-#define DBMS_NAME                                       "ClickHouse"
-#define DBMS_VERSION_MAJOR                              1
-#define DBMS_VERSION_MINOR                              2
-
-#define REVISION                                        54405
-
-#define DBMS_MIN_REVISION_WITH_TEMPORARY_TABLES         50264
-#define DBMS_MIN_REVISION_WITH_TOTAL_ROWS_IN_PROGRESS   51554
-#define DBMS_MIN_REVISION_WITH_BLOCK_INFO               51903
-#define DBMS_MIN_REVISION_WITH_CLIENT_INFO              54032
-#define DBMS_MIN_REVISION_WITH_SERVER_TIMEZONE          54058
+#define DBMS_MIN_REVISION_WITH_TEMPORARY_TABLES 50264
+#define DBMS_MIN_REVISION_WITH_TOTAL_ROWS_IN_PROGRESS 51554
+#define DBMS_MIN_REVISION_WITH_BLOCK_INFO 51903
+#define DBMS_MIN_REVISION_WITH_CLIENT_INFO 54032
+#define DBMS_MIN_REVISION_WITH_SERVER_TIMEZONE 54058
 #define DBMS_MIN_REVISION_WITH_QUOTA_KEY_IN_CLIENT_INFO 54060
 //#define DBMS_MIN_REVISION_WITH_TABLES_STATUS            54226
 //#define DBMS_MIN_REVISION_WITH_TIME_ZONE_PARAMETER_IN_DATETIME_DATA_TYPE 54337
-#define DBMS_MIN_REVISION_WITH_SERVER_DISPLAY_NAME      54372
-#define DBMS_MIN_REVISION_WITH_VERSION_PATCH            54401
-#define DBMS_MIN_REVISION_WITH_LOW_CARDINALITY_TYPE     54405
+#define DBMS_MIN_REVISION_WITH_SERVER_DISPLAY_NAME 54372
+#define DBMS_MIN_REVISION_WITH_VERSION_PATCH 54401
+#define DBMS_MIN_REVISION_WITH_LOW_CARDINALITY_TYPE 54405
 
 namespace clickhouse {
 
 struct ClientInfo {
-    uint8_t iface_type = 1; // TCP
+    uint8_t iface_type = 1;  // TCP
     uint8_t query_kind;
     std::string initial_user;
     std::string initial_query_id;
@@ -48,27 +47,23 @@ struct ClientInfo {
     std::string os_user;
     std::string client_hostname;
     std::string client_name;
-    std::string initial_address = "[::ffff:127.0.0.1]:0";
+    std::string initial_address   = "[::ffff:127.0.0.1]:0";
     uint64_t client_version_major = 0;
     uint64_t client_version_minor = 0;
     uint64_t client_version_patch = 0;
-    uint32_t client_revision = 0;
+    uint32_t client_revision      = 0;
 };
 
 std::ostream& operator<<(std::ostream& os, const ClientOptions& opt) {
-    os << "Client(" << opt.user << '@' << opt.host << ":" << opt.port
-       << " ping_before_query:" << opt.ping_before_query
-       << " send_retries:" << opt.send_retries
-       << " retry_timeout:" << opt.retry_timeout.count()
-       << " compression_method:"
-       << (opt.compression_method == CompressionMethod::LZ4 ? "LZ4" : "None")
-       << ")";
+    os << "Client(" << opt.user << '@' << opt.host << ":" << opt.port << " ping_before_query:" << opt.ping_before_query
+       << " send_retries:" << opt.send_retries << " retry_timeout:" << opt.retry_timeout.count()
+       << " compression_method:" << (opt.compression_method == CompressionMethod::LZ4 ? "LZ4" : "None") << ")";
     return os;
 }
 
 class Client::Impl {
 public:
-     Impl(const ClientOptions& opts);
+    Impl(const ClientOptions& opts);
     ~Impl();
 
     void ExecuteQuery(Query query);
@@ -80,6 +75,10 @@ public:
     void InsertQuery(Query query);
 
     void InsertData(const Block& block);
+
+    void InsertBlock(const Block& block);
+
+    void InsertEnd();
 
     void Ping();
 
@@ -118,9 +117,7 @@ private:
 private:
     class EnsureNull {
     public:
-        inline EnsureNull(QueryEvents* ev, QueryEvents** ptr)
-            : ptr_(ptr)
-        {
+        inline EnsureNull(QueryEvents* ev, QueryEvents** ptr) : ptr_(ptr) {
             if (ptr_) {
                 *ptr_ = ev;
             }
@@ -134,9 +131,7 @@ private:
 
     private:
         QueryEvents** ptr_;
-
     };
-
 
     const ClientOptions options_;
     QueryEvents* events_;
@@ -155,21 +150,19 @@ private:
     ServerInfo server_info_;
 };
 
-
 Client::Impl::Impl(const ClientOptions& opts)
-    : options_(opts)
-    , events_(nullptr)
-    , socket_(-1)
-    , socket_input_(socket_)
-    , buffered_input_(&socket_input_)
-    , input_(&buffered_input_)
-    , socket_output_(socket_)
-    , buffered_output_(&socket_output_)
-    , output_(&buffered_output_)
-{
+    : options_(opts),
+      events_(nullptr),
+      socket_(-1),
+      socket_input_(socket_),
+      buffered_input_(&socket_input_),
+      input_(&buffered_input_),
+      socket_output_(socket_),
+      buffered_output_(&socket_output_),
+      output_(&buffered_output_) {
     // TODO: throw on big-endianness of platform
 
-    for (unsigned int i = 0; ; ) {
+    for (unsigned int i = 0;;) {
         try {
             ResetConnection();
             break;
@@ -187,8 +180,8 @@ Client::Impl::Impl(const ClientOptions& opts)
     }
 }
 
-Client::Impl::~Impl()
-{ }
+Client::Impl::~Impl() {
+}
 
 void Client::Impl::ExecuteQuery(Query query) {
     EnsureNull en(static_cast<QueryEvents*>(&query), &events_);
@@ -265,7 +258,7 @@ void Client::Impl::InsertQuery(Query query) {
     }
 
     SendQuery(query.GetText());
-    
+
     uint64_t server_packet;
     // Receive data packet.
     while (true) {
@@ -296,6 +289,17 @@ void Client::Impl::InsertData(const Block& block) {
     }
 }
 
+void Client::Impl::InsertBlock(const Block& block) {
+    SendData(block);
+}
+
+void Client::Impl::InsertEnd() {
+    SendData(Block());
+    while (ReceivePacket()) {
+        ;
+    }
+}
+
 void Client::Impl::Ping() {
     WireFormat::WriteUInt64(&output_, ClientCodes::Ping);
     output_.Flush();
@@ -316,13 +320,11 @@ void Client::Impl::ResetConnection() {
     }
 
     if (options_.tcp_keepalive) {
-        s.SetTcpKeepAlive(options_.tcp_keepalive_idle.count(),
-                          options_.tcp_keepalive_intvl.count(),
-                          options_.tcp_keepalive_cnt);
+        s.SetTcpKeepAlive(options_.tcp_keepalive_idle.count(), options_.tcp_keepalive_intvl.count(), options_.tcp_keepalive_cnt);
     }
 
-    socket_ = std::move(s);
-    socket_input_ = SocketInput(socket_);
+    socket_        = std::move(s);
+    socket_input_  = SocketInput(socket_);
     socket_output_ = SocketOutput(socket_);
     buffered_input_.Reset();
     buffered_output_.Reset();
@@ -357,83 +359,83 @@ bool Client::Impl::ReceivePacket(uint64_t* server_packet) {
     }
 
     switch (packet_type) {
-    case ServerCodes::Data: {
-        if (!ReceiveData()) {
-            throw std::runtime_error("can't read data packet from input stream");
+        case ServerCodes::Data: {
+            if (!ReceiveData()) {
+                throw std::runtime_error("can't read data packet from input stream");
+            }
+            return true;
         }
-        return true;
-    }
 
-    case ServerCodes::Exception: {
-        ReceiveException();
-        return false;
-    }
-
-    case ServerCodes::ProfileInfo: {
-        Profile profile;
-
-        if (!WireFormat::ReadUInt64(&input_, &profile.rows)) {
-            return false;
-        }
-        if (!WireFormat::ReadUInt64(&input_, &profile.blocks)) {
-            return false;
-        }
-        if (!WireFormat::ReadUInt64(&input_, &profile.bytes)) {
-            return false;
-        }
-        if (!WireFormat::ReadFixed(&input_, &profile.applied_limit)) {
-            return false;
-        }
-        if (!WireFormat::ReadUInt64(&input_, &profile.rows_before_limit)) {
-            return false;
-        }
-        if (!WireFormat::ReadFixed(&input_, &profile.calculated_rows_before_limit)) {
+        case ServerCodes::Exception: {
+            ReceiveException();
             return false;
         }
 
-        if (events_) {
-            events_->OnProfile(profile);
-        }
+        case ServerCodes::ProfileInfo: {
+            Profile profile;
 
-        return true;
-    }
-
-    case ServerCodes::Progress: {
-        Progress info;
-
-        if (!WireFormat::ReadUInt64(&input_, &info.rows)) {
-            return false;
-        }
-        if (!WireFormat::ReadUInt64(&input_, &info.bytes)) {
-            return false;
-        }
-        if (REVISION >= DBMS_MIN_REVISION_WITH_TOTAL_ROWS_IN_PROGRESS) {
-            if (!WireFormat::ReadUInt64(&input_, &info.total_rows)) {
+            if (!WireFormat::ReadUInt64(&input_, &profile.rows)) {
                 return false;
             }
+            if (!WireFormat::ReadUInt64(&input_, &profile.blocks)) {
+                return false;
+            }
+            if (!WireFormat::ReadUInt64(&input_, &profile.bytes)) {
+                return false;
+            }
+            if (!WireFormat::ReadFixed(&input_, &profile.applied_limit)) {
+                return false;
+            }
+            if (!WireFormat::ReadUInt64(&input_, &profile.rows_before_limit)) {
+                return false;
+            }
+            if (!WireFormat::ReadFixed(&input_, &profile.calculated_rows_before_limit)) {
+                return false;
+            }
+
+            if (events_) {
+                events_->OnProfile(profile);
+            }
+
+            return true;
         }
 
-        if (events_) {
-            events_->OnProgress(info);
+        case ServerCodes::Progress: {
+            Progress info;
+
+            if (!WireFormat::ReadUInt64(&input_, &info.rows)) {
+                return false;
+            }
+            if (!WireFormat::ReadUInt64(&input_, &info.bytes)) {
+                return false;
+            }
+            if (REVISION >= DBMS_MIN_REVISION_WITH_TOTAL_ROWS_IN_PROGRESS) {
+                if (!WireFormat::ReadUInt64(&input_, &info.total_rows)) {
+                    return false;
+                }
+            }
+
+            if (events_) {
+                events_->OnProgress(info);
+            }
+
+            return true;
         }
 
-        return true;
-    }
-
-    case ServerCodes::Pong: {
-        return true;
-    }
-
-    case ServerCodes::EndOfStream: {
-        if (events_) {
-            events_->OnFinish();
+        case ServerCodes::Pong: {
+            return true;
         }
-        return false;
-    }
 
-    default:
-        throw std::runtime_error("unimplemented " + std::to_string((int)packet_type));
-        break;
+        case ServerCodes::EndOfStream: {
+            if (events_) {
+                events_->OnFinish();
+            }
+            return false;
+        }
+
+        default:
+            throw std::runtime_error("unimplemented " + std::to_string((int)packet_type));
+            break;
     }
 
     return false;
@@ -466,7 +468,7 @@ bool Client::Impl::ReadBlock(Block* block, CodedInputStream* input) {
     }
 
     uint64_t num_columns = 0;
-    uint64_t num_rows = 0;
+    uint64_t num_rows    = 0;
 
     if (!WireFormat::ReadUInt64(input, &num_columns)) {
         return false;
@@ -589,12 +591,11 @@ void Client::Impl::SendQuery(const std::string& query) {
     if (server_info_.revision >= DBMS_MIN_REVISION_WITH_CLIENT_INFO) {
         ClientInfo info;
 
-        info.query_kind = 1;
-        info.client_name = "ClickHouse client";
+        info.query_kind           = 1;
+        info.client_name          = "ClickHouse client";
         info.client_version_major = DBMS_VERSION_MAJOR;
         info.client_version_minor = DBMS_VERSION_MINOR;
-        info.client_revision = REVISION;
-
+        info.client_revision      = REVISION;
 
         WireFormat::WriteFixed(&output_, info.query_kind);
         WireFormat::WriteString(&output_, info.initial_user);
@@ -609,17 +610,16 @@ void Client::Impl::SendQuery(const std::string& query) {
         WireFormat::WriteUInt64(&output_, info.client_version_minor);
         WireFormat::WriteUInt64(&output_, info.client_revision);
 
-        if (server_info_.revision >= DBMS_MIN_REVISION_WITH_QUOTA_KEY_IN_CLIENT_INFO)
-            WireFormat::WriteString(&output_, info.quota_key);
+        if (server_info_.revision >= DBMS_MIN_REVISION_WITH_QUOTA_KEY_IN_CLIENT_INFO) WireFormat::WriteString(&output_, info.quota_key);
         if (server_info_.revision >= DBMS_MIN_REVISION_WITH_VERSION_PATCH) {
             WireFormat::WriteUInt64(&output_, info.client_version_patch);
         }
     }
 
     /// Per query settings.
-    //if (settings)
+    // if (settings)
     //    settings->serialize(*out);
-    //else
+    // else
     WireFormat::WriteString(&output_, std::string());
 
     WireFormat::WriteUInt64(&output_, Stages::Complete);
@@ -632,14 +632,13 @@ void Client::Impl::SendQuery(const std::string& query) {
     output_.Flush();
 }
 
-
 void Client::Impl::WriteBlock(const Block& block, CodedOutputStream* output) {
     // Additional information about block.
     if (server_info_.revision >= DBMS_MIN_REVISION_WITH_BLOCK_INFO) {
         WireFormat::WriteUInt64(output, 1);
-        WireFormat::WriteFixed (output, block.Info().is_overflows);
+        WireFormat::WriteFixed(output, block.Info().is_overflows);
         WireFormat::WriteUInt64(output, 2);
-        WireFormat::WriteFixed (output, block.Info().bucket_num);
+        WireFormat::WriteFixed(output, block.Info().bucket_num);
         WireFormat::WriteUInt64(output, 0);
     }
 
@@ -687,14 +686,15 @@ void Client::Impl::SendData(const Block& block) {
                 // Fill header
                 uint8_t* p = buf.data();
                 // Compression method
-                WriteUnaligned(p, (uint8_t)0x82); p += 1;
+                WriteUnaligned(p, (uint8_t)0x82);
+                p += 1;
                 // Compressed data size with header
-                WriteUnaligned(p, (uint32_t)buf.size()); p += 4;
+                WriteUnaligned(p, (uint32_t)buf.size());
+                p += 4;
                 // Original data size
                 WriteUnaligned(p, (uint32_t)tmp.size());
 
-                WireFormat::WriteFixed(&output_, CityHash128(
-                                    (const char*)buf.data(), buf.size()));
+                WireFormat::WriteFixed(&output_, CityHash128((const char*)buf.data(), buf.size()));
                 WireFormat::WriteBytes(&output_, buf.data(), buf.size());
                 break;
             }
@@ -770,7 +770,7 @@ bool Client::Impl::ReceiveHello() {
 }
 
 void Client::Impl::RetryGuard(std::function<void()> func) {
-    for (unsigned int i = 0; ; ++i) {
+    for (unsigned int i = 0;; ++i) {
         try {
             func();
             return;
@@ -791,14 +791,11 @@ void Client::Impl::RetryGuard(std::function<void()> func) {
     }
 }
 
-Client::Client(const ClientOptions& opts)
-    : options_(opts)
-    , impl_(new Impl(opts))
-{
+Client::Client(const ClientOptions& opts) : options_(opts), impl_(new Impl(opts)) {
 }
 
-Client::~Client()
-{ }
+Client::~Client() {
+}
 
 void Client::Execute(const Query& query) {
     impl_->ExecuteQuery(query);
@@ -828,6 +825,14 @@ void Client::InsertData(const Block& block) {
     impl_->InsertData(block);
 }
 
+void Client::InsertBlock(const Block& block) {
+    impl_->InsertBlock(block);
+}
+
+void Client::InsertEnd() {
+    impl_->InsertEnd();
+}
+
 void Client::Ping() {
     impl_->Ping();
 }
@@ -840,4 +845,4 @@ const ServerInfo& Client::GetServerInfo() const {
     return impl_->GetServerInfo();
 }
 
-}
+}  // namespace clickhouse

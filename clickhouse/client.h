@@ -1,7 +1,9 @@
 #pragma once
 
-#include "query.h"
-#include "exceptions.h"
+#include <chrono>
+#include <memory>
+#include <ostream>
+#include <string>
 
 #include "columns/array.h"
 #include "columns/date.h"
@@ -15,11 +17,8 @@
 #include "columns/string.h"
 #include "columns/tuple.h"
 #include "columns/uuid.h"
-
-#include <chrono>
-#include <memory>
-#include <ostream>
-#include <string>
+#include "exceptions.h"
+#include "query.h"
 
 namespace clickhouse {
 
@@ -27,24 +26,24 @@ struct ServerInfo {
     std::string name;
     std::string timezone;
     std::string display_name;
-    uint64_t    version_major;
-    uint64_t    version_minor;
-    uint64_t    version_patch;
-    uint64_t    revision;
+    uint64_t version_major;
+    uint64_t version_minor;
+    uint64_t version_patch;
+    uint64_t revision;
 };
 
 /// Methods of block compression.
 enum class CompressionMethod {
-    None    = -1,
-    LZ4     =  1,
+    None = -1,
+    LZ4  = 1,
 };
 
 struct ClientOptions {
-#define DECLARE_FIELD(name, type, setter, default) \
-    type name = default; \
+#define DECLARE_FIELD(name, type, setter, default)    \
+    type name = default;                              \
     inline ClientOptions& setter(const type& value) { \
-        name = value; \
-        return *this; \
+        name = value;                                 \
+        return *this;                                 \
     }
 
     /// Hostname of the server.
@@ -90,7 +89,7 @@ std::ostream& operator<<(std::ostream& os, const ClientOptions& options);
  */
 class Client {
 public:
-     Client(const ClientOptions& opts);
+    Client(const ClientOptions& opts);
     ~Client();
 
     /// Intends for execute arbitrary queries.
@@ -114,6 +113,10 @@ public:
 
     void InsertData(const Block& block);
 
+    void InsertBlock(const Block& block);
+
+    void InsertEnd();
+
     /// Ping server for aliveness.
     void Ping();
 
@@ -129,4 +132,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}
+}  // namespace clickhouse
