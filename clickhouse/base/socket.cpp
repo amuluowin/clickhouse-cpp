@@ -8,7 +8,7 @@
 #include <memory.h>
 
 #ifdef USE_SWOOLE
-#include "ext/swoole/include/socket_hook.h"
+#include "ext/swoole/include/swoole_socket_hook.h"
 #endif
 
 #if !defined(_win_)
